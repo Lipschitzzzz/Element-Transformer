@@ -2,28 +2,46 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
-from pathlib import Path
 import os
 
-class OceanDataSet(Dataset):
-    def __init__(self, data_path, split='train'):
-        self.data = np.load(data_path, mmap_mode='r')
-        self.split = split
+class FVCOMDataset(Dataset):
+    def __init__(self, data_dir, total_timesteps=144*3, seq_len=6):
+        self.data_dir = data_dir
+        self.seq_len = seq_len
+        self.total_timesteps = total_timesteps
+        self.start_indices = list(range(total_timesteps - seq_len))
 
     def __len__(self):
-        return len(self.data['x'])
+        return len(self.start_indices)
 
     def __getitem__(self, idx):
-        x = self.data['x'][idx]
-        y = self.data['y'][idx]
-        # print(x.shape)
-        # print(y.shape)
+        start_t = self.start_indices[idx]
+        
+        inputs = []
+        for i in range(self.seq_len):
+            path = os.path.join(self.data_dir, f"step_{start_t + i:03d}.npz")
+            frame = np.load(path)['data']
+            inputs.append(frame)
+        inputs = np.stack(inputs, axis=0)
 
-        return torch.from_numpy(x).float(), torch.from_numpy(y).float()
+        target_path = os.path.join(self.data_dir, f"step_{start_t + self.seq_len:03d}.npz")
+        target = np.load(target_path)['data']
+        target = np.expand_dims(target, axis=0)
 
-    def __del__(self):
-        self.data.close()
+        return torch.from_numpy(inputs).float(), torch.from_numpy(target).float()
+    
+class WeightedMAEMSELoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.maeloss = nn.L1Loss()
+        self.mseloss = nn.MSELoss()
 
+    def forward(self, pred, target):
+        weight1 = 1.0
+        weight2 = 0.2
+        weighted_loss = weight1 * self.maeloss(pred, target) + weight2 * self.mseloss(pred, target)
+        return weighted_loss
+    
 class NodeEmbedding(nn.Module):
     def __init__(self, t_in=6, in_chans=4, embed_dim=768):
         super().__init__()
