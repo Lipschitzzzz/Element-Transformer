@@ -5,31 +5,48 @@ from torch.utils.data import Dataset
 import os
 
 class FVCOMDataset(Dataset):
-    def __init__(self, data_dir, total_timesteps=144*3, seq_len=6):
+    def __init__(self, data_dir, total_timesteps=144*7, steps_per_file=144, pred_step=1):
         self.data_dir = data_dir
-        self.seq_len = seq_len
+        self.file_list = os.listdir(data_dir)
+        print(self.file_list)
         self.total_timesteps = total_timesteps
-        self.start_indices = list(range(total_timesteps - seq_len))
+        self.steps_per_file = steps_per_file
+        self.pred_step = pred_step
+        
+        self.max_start_t = total_timesteps - pred_step - 1
+        if self.max_start_t < 0:
+            raise ValueError(f"pred_step={pred_step} too large for total_timesteps={total_timesteps}")
+        
+        self.total_samples = self.max_start_t + 1
+
+    def _global_to_local(self, global_t):
+        file_idx = global_t // self.steps_per_file
+        local_t = global_t % self.steps_per_file
+        return file_idx, local_t
+
+    def _load_frame(self, global_t):
+        file_idx, local_t = self._global_to_local(global_t)
+        path = os.path.join(self.data_dir, self.file_list[file_idx])
+        print(self.data_dir + self.file_list[file_idx])
+        data = np.load(path)['data']
+        return data[local_t]
 
     def __len__(self):
-        return len(self.start_indices)
+        return self.total_samples
 
     def __getitem__(self, idx):
-        start_t = self.start_indices[idx]
-        
-        inputs = []
-        for i in range(self.seq_len):
-            path = os.path.join(self.data_dir, f"step_{start_t + i:03d}.npz")
-            frame = np.load(path)['data']
-            inputs.append(frame)
-        inputs = np.stack(inputs, axis=0)
+        t = idx
+        t_target = t + self.pred_step
 
-        target_path = os.path.join(self.data_dir, f"step_{start_t + self.seq_len:03d}.npz")
-        target = np.load(target_path)['data']
-        target = np.expand_dims(target, axis=0)
+        input_frame = self._load_frame(t)
+        target_frame = self._load_frame(t_target)
 
-        return torch.from_numpy(inputs).float(), torch.from_numpy(target).float()
+        input_tensor = torch.from_numpy(input_frame).float().unsqueeze(0)
+        target_tensor = torch.from_numpy(target_frame).float().unsqueeze(0)
+
+        return input_tensor, target_tensor
     
+
 class WeightedMAEMSELoss(nn.Module):
     def __init__(self):
         super().__init__()
