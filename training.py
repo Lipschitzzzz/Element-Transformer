@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Subset
-import elementtransformer
+import elementtransformer, visualization
 import time
 
 def training_test():
@@ -47,19 +47,18 @@ def training_u_v(data_dir, num_epochs, checkpoint_name_out):
     best_loss = float('inf')
     early_stop_cnt= 0
     best_epoch = 0
-
     batch_size = 1
     num_nodes = 115443
     t_in = 1
     t_out = 1
-    var_in = 2
-    var_out = 2
-    embed_dim = 128
+    var_in = 18
+    var_out = 18
+    embed_dim = 256
     device = "cuda" if torch.cuda.is_available() else "cpu"
     full_dataset = elementtransformer.FVCOMDataset(
         data_dir=data_dir,
-        total_timesteps=10,
-        seq_len=1
+        total_timesteps=3,
+        pred_step=t_in
     )
     total_samples = len(full_dataset)
     train_size = int(0.8 * total_samples)
@@ -79,20 +78,21 @@ def training_u_v(data_dir, num_epochs, checkpoint_name_out):
                                           t_in=t_in).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     criterion = elementtransformer.WeightedMAEMSELoss().cuda()
-
+    
+    visualization.count_parameters(model)
 
     model.train()
     for epoch in range(num_epochs):
         train_loss = 0.0
-        for x, y in train_loader:
-            x, y = x.to(device), y.to(device)
+        for tx, ty in train_loader:
+            tx, ty = tx.to(device), ty.to(device)
 
-            pred = model(x)
-            print("epoch: ", epoch+1, " input:  ", x.shape)
+            pred = model(tx)
+            print("epoch: ", epoch+1, " input:  ", tx.shape)
             print("epoch: ", epoch+1, " pred:   ", pred.shape)
-            print("epoch: ", epoch+1, " target: ", y.shape)
+            print("epoch: ", epoch+1, " target: ", ty.shape)
             
-            loss = criterion(pred, y)
+            loss = criterion(pred, ty)
 
             optimizer.zero_grad()
             loss.backward()
@@ -103,11 +103,11 @@ def training_u_v(data_dir, num_epochs, checkpoint_name_out):
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
-            for x, y in train_loader:
-                x, y = x.to(device), y.to(device)
+            for vx, vy in val_loader:
+                vx, vy = vx.to(device), vy.to(device)
 
-                pred = model(x)
-                loss = criterion(pred, y)
+                pred = model(vx)
+                loss = criterion(pred, vy)
 
                 val_loss += loss.item()
         val_loss /= len(val_loader)

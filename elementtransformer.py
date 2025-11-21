@@ -27,8 +27,8 @@ class FVCOMDataset(Dataset):
     def _load_frame(self, global_t):
         file_idx, local_t = self._global_to_local(global_t)
         path = os.path.join(self.data_dir, self.file_list[file_idx])
-        print(self.data_dir + self.file_list[file_idx])
-        data = np.load(path)['data']
+        # print(self.data_dir + self.file_list[file_idx])
+        data = np.load(path)
         return data[local_t]
 
     def __len__(self):
@@ -45,19 +45,31 @@ class FVCOMDataset(Dataset):
         target_tensor = torch.from_numpy(target_frame).float().unsqueeze(0)
 
         return input_tensor, target_tensor
-    
 
 class WeightedMAEMSELoss(nn.Module):
-    def __init__(self):
+    def __init__(self, weight_mae=1.0, weight_mse=0.2):
         super().__init__()
-        self.maeloss = nn.L1Loss()
-        self.mseloss = nn.MSELoss()
+        self.weight_mae = weight_mae
+        self.weight_mse = weight_mse
+
+        channel_weights = torch.ones(18)
+        channel_weights[0:15] = 1.0
+        channel_weights[15:18] = 5.0
+        self.register_buffer('channel_weights', channel_weights)
 
     def forward(self, pred, target):
-        weight1 = 1.0
-        weight2 = 0.2
-        weighted_loss = weight1 * self.maeloss(pred, target) + weight2 * self.mseloss(pred, target)
-        return weighted_loss
+        weights = self.channel_weights.view([1] * (pred.dim() - 1) + [-1])
+        print(pred.shape)
+        print(target.shape)
+        print(weights.shape)
+        abs_error = torch.abs(pred - target)
+        squared_error = (pred - target) ** 2
+        weighted_abs_error = weights * abs_error
+        weighted_squared_error = weights * squared_error
+        mae = weighted_abs_error.mean()
+        mse = weighted_squared_error.mean()
+        loss = self.weight_mae * mae + self.weight_mse * mse
+        return loss
     
 class NodeEmbedding(nn.Module):
     def __init__(self, t_in=6, in_chans=4, embed_dim=768):
