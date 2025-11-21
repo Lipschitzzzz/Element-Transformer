@@ -5,6 +5,7 @@ import cartopy.crs as ccrs
 import elementtransformer
 import torch
 import processing
+import json
 
 def count_parameters(model):
     for p in model.parameters():
@@ -65,7 +66,7 @@ def predict_one_day(npy_file, model, checkpoint_name, device):
     all_data = np.load(npy_file)
     criterion = elementtransformer.WeightedMAEMSELoss().cuda()
     all_output = []
-    daily_length = 144
+    daily_length = 3
     predict_length = 1
     for i in range(0, daily_length - predict_length):
         step = i
@@ -79,7 +80,7 @@ def predict_one_day(npy_file, model, checkpoint_name, device):
     output = processing.denormalization(np.array(all_output), "dataset/normalization_parameters/GGB_240506T00.json")
     # (144, 115443, 18)
     return output
-def img_drawing_by_batch(nc_file, layer, pred, target):
+def init_config(nc_file, json_path):
     ds = xr.open_dataset(nc_file, decode_times=False)
     if 'lon' in ds and 'lat' in ds:
         lon = ds['lon'].values
@@ -100,7 +101,25 @@ def img_drawing_by_batch(nc_file, layer, pred, target):
     lat_min, lat_max = lat.min(), lat.max()
     delta_lon = lon_max - lon_min
     delta_lat = lat_max - lat_min
-    daily_length = 144
+    # config = [lon, lat, lon_min, lon_max, lat_min, lat_max,
+    #             delta_lon, delta_lat, triangles]
+    config = {
+        "lon": lon.tolist(),
+        "lat": lat.tolist(),
+        "lon_min": lon_min.tolist(),
+        "lon_max": lon_max.tolist(),
+        "lat_min": lat_min.tolist(),
+        "lat_max": lat_max.tolist(),
+        "delta_lon": delta_lon.tolist(),
+        "delta_lat": delta_lat.tolist(),
+        "triangles": triangles.tolist()
+    }
+    with open(json_path, 'w') as f:
+        json.dump(config, f, indent=4)
+    
+
+def img_drawing_by_batch(nc_file, layer, pred, target):
+    daily_length = 3
     predict_length = 1
     # print(pred.shape, target.shape)
     # pred target 144, 115443, 18
@@ -108,9 +127,20 @@ def img_drawing_by_batch(nc_file, layer, pred, target):
     max_value = max(np.nanmax(pred[:,:,layer]), np.nanmax(target[:,:,layer]))
     print('min_value:', min_value)
     print('max_value:', max_value)
+    with open('img_config.json', 'r') as f:
+        params = json.load(f)
+    lon = np.array(params['lon'])
+    lat = np.array(params['lat'])
+    lon_min = params['lon_min']
+    lon_max = params['lon_max']
+    lat_min = params['lat_min']
+    lat_max = params['lat_max']
+    delta_lon = params['delta_lon']
+    delta_lat = params['delta_lat']
+    triangles = np.array(params['triangles'])
     for step in range(0, daily_length - predict_length):
         two_img('result/' + str(step).zfill(3), lon, lat, lon_min, lon_max, lat_min, lat_max,
-                delta_lon, delta_lat, triangles, target[step,:,layer], pred[step,:,layer], min_value, max_value, int_to_time_str(step))
+            delta_lon, delta_lat, triangles, target[step,:,layer], pred[step,:,layer], min_value, max_value, int_to_time_str(step))
     
 
 if __name__ == "__main__":
@@ -119,12 +149,13 @@ if __name__ == "__main__":
     checkpoint_name='checkpoints/2025_11_21_11_27_Inha_A100_GPU_Server_model.pth'
     npy_file='dataset/step_data/GGB_240511T00.npy'
     model = elementtransformer.FVCOMModel(var_in=18,var_out=18,triangle=115443, embed_dim=256, t_in=1).to(device)
-    # one_day_prediction_data = predict_one_day(npy_file, model, checkpoint_name, device)
+    one_day_prediction_data = predict_one_day(npy_file, model, checkpoint_name, device)
     all_data = np.load(npy_file)[1:]
-    # target_data = processing.denormalization(all_data, "dataset/normalization_parameters/GGB_240506T00.json")
-    # img_drawing_by_batch(nc_file, 0, one_day_prediction_data, target_data[:4,:,:])
+    target_data = processing.denormalization(all_data, "dataset/normalization_parameters/GGB_240506T00.json")
+    img_drawing_by_batch(nc_file, 0, one_day_prediction_data, target_data[:4,:,:])
     # print(min_value)
     # print(max_value)
+    # init_config(nc_file, 'img_config.json')
 
     # for i in range(0, 144):
     #     # pred_list.append(output)

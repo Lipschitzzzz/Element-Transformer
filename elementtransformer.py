@@ -52,6 +52,7 @@ class WeightedMAEMSELoss(nn.Module):
         self.weight_mae = weight_mae
         self.weight_mse = weight_mse
 
+
         channel_weights = torch.ones(18)
         channel_weights[0:15] = 1.0
         channel_weights[15:18] = 5.0
@@ -59,9 +60,9 @@ class WeightedMAEMSELoss(nn.Module):
 
     def forward(self, pred, target):
         weights = self.channel_weights.view([1] * (pred.dim() - 1) + [-1])
-        print(pred.shape)
-        print(target.shape)
-        print(weights.shape)
+        # print(pred.shape)
+        # print(target.shape)
+        # print(weights.shape)
         abs_error = torch.abs(pred - target)
         squared_error = (pred - target) ** 2
         weighted_abs_error = weights * abs_error
@@ -220,9 +221,9 @@ class ElementTransformerNet(nn.Module):
         with torch.no_grad():
             output = self(input_data)
 
-        prediction = output.squeeze(0).cpu().numpy()
+        # prediction = output.squeeze(0).cpu().numpy()
         
-        return prediction
+        return output
 
 def FVCOMModel(var_in=2, var_out=1, t_in=6, t_out=1, triangle=100, embed_dim=256,
              depth=2,num_heads=2,mlp_ratio=4,dropout=0.1):

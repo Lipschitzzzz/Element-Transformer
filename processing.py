@@ -67,6 +67,8 @@ def nc2npy(nc_filename, parameters=['u', 'v']):
     ds.close()
 
 if __name__ == "__main__":
+    # 0 4 5 9 10 14 15 16 17
+    
     vars = ['u', 'v', 'tauc', 'ww', 'uwind_speed', 'vwind_speed']
     file_list = os.listdir('dataset')
     for i in file_list:
