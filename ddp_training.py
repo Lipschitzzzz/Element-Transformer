@@ -20,7 +20,6 @@ def train_zero_epoch_ddp(data_dir, num_epochs, checkpoint_name_out):
     var_in = 10
     var_out = 10
     embed_dim = 256
-    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
@@ -51,7 +50,7 @@ def train_zero_epoch_ddp(data_dir, num_epochs, checkpoint_name_out):
     val_dataset = Subset(full_dataset, val_indices)
 
     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=local_rank, shuffle=True)
-    val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=local_rank, shuffle=False)
+    val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=local_rank, shuffle=True)
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=1, sampler=train_sampler,
@@ -72,9 +71,9 @@ def train_zero_epoch_ddp(data_dir, num_epochs, checkpoint_name_out):
 
             pred = model(inp)
             loss = criterion(pred, target)
-            print("epoch: ", epoch+1, " input:  ", inp.shape)
-            print("epoch: ", epoch+1, " pred:   ", pred.shape)
-            print("epoch: ", epoch+1, " target: ", target.shape)
+            print("GPU:" + str(local_rank) +  " epoch: ", epoch+1, " input:  ", inp.shape)
+            print("GPU:" + str(local_rank) +  " epoch: ", epoch+1, " pred:  ", pred.shape)
+            print("GPU:" + str(local_rank) +  " epoch: ", epoch+1, " target:  ", target.shape)
 
             optimizer.zero_grad()
             loss.backward()
@@ -138,7 +137,7 @@ def train_zero_epoch_ddp(data_dir, num_epochs, checkpoint_name_out):
 
 def main():
     world_size = torch.cuda.device_count()
-    print(world_size, " GPU found")
+    print(world_size, "GPU found")
     assert world_size > 0, "No GPUs available"
     start_time = time.time()
     timestamp_str = time.strftime("%Y_%m_%d_%H_%M", time.localtime(start_time))
