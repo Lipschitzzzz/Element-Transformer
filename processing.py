@@ -67,11 +67,37 @@ def nc2npy(nc_filename, parameters=['u', 'v']):
     ds.close()
 
 if __name__ == "__main__":
-    # 0 4 5 9 10 14 15 16 17
+    # u 0 1 2 3 4
+    # v 5 6 7 8 9
+    # tauc 10 11 12 13 14
+    # ww 15
+    # uwind_speed 16
+    # vwind_speed 17
     
-    vars = ['u', 'v', 'tauc', 'ww', 'uwind_speed', 'vwind_speed']
-    file_list = os.listdir('dataset')
-    for i in file_list:
-        if i.endswith('.nc'):
-            print(i)
-            nc2npy(i, vars)
+    # vars = ['u', 'v', 'tauc', 'ww', 'uwind_speed', 'vwind_speed']
+    # file_list = os.listdir('dataset')
+    # for i in file_list:
+    #     if i.endswith('.nc'):
+    #         print(i)
+    #         nc2npy(i, vars)
+    # import xarray as xr
+
+    # 打开 FVCOM NetCDF 文件
+    ds = xr.open_dataset('dataset/GGB_240509T00.nc', decode_times=False)
+
+    # 检查是否存在 'nbe' 变量
+    if 'nbe' in ds:
+        # FVCOM 中 nbe 通常是 (3, nele)，且使用 1-based indexing
+        nbe = ds['nbe'].values  # shape: (3, nele)
+
+        # 转换为 0-based（Python 常规索引），注意：FVCOM 用 0 或 -1 表示无邻居，需保留
+        # 假设原始数据中无邻居标记为 0（常见情况）
+        nbe_0based = nbe - 1
+        nbe_0based[nbe == 0] = -1  # 将原本的 0（无邻居）转为 -1，避免变成 -1 索引
+
+        # print("1")
+        print(nbe_0based[:, :10])  # 打印前5个三角形作为示例
+        print(nbe_0based.shape)
+        np.save('nbe.npy', nbe_0based)
+    else:
+        raise KeyError("2")

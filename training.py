@@ -54,6 +54,7 @@ def training_u_v(data_dir, num_epochs, checkpoint_name_out):
     var_in = 18
     var_out = 18
     embed_dim = 256
+    nbe = np.load('nbe.npy')
     device = "cuda" if torch.cuda.is_available() else "cpu"
     full_dataset = elementtransformer.FVCOMDataset(
         data_dir=data_dir,
@@ -75,7 +76,7 @@ def training_u_v(data_dir, num_epochs, checkpoint_name_out):
 
     model = elementtransformer.FVCOMModel(var_in=var_in,var_out=var_out,
                                           triangle=num_nodes, embed_dim=embed_dim,
-                                          t_in=t_in).to(device)
+                                          t_in=t_in,neighbor_table=nbe).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     criterion = elementtransformer.WeightedMAEMSELoss().cuda()
     
@@ -144,4 +145,4 @@ def training_u_v(data_dir, num_epochs, checkpoint_name_out):
 if __name__ == "__main__":
     start_time = time.time()
     timestamp_str = time.strftime("%Y_%m_%d_%H_%M", time.localtime(start_time))
-    training_u_v('dataset/step_data', 10, "checkpoints/" + timestamp_str + "_Inha_GPU_Server_model.pth")
+    training_u_v('dataset/step_data', 10, "checkpoints/" + timestamp_str + "_Inha_GPU_Server.pth")

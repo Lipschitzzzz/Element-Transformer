@@ -103,9 +103,111 @@ class TriangleEmbedding(nn.Module):
         x = x.reshape(B, T, self.n_patches_total, self.embed_dim)
 
         return x
+    
+class NeighborSparseAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads, neighbor_table, dropout=0.1):
+        """
+        neighbor_table: numpy array or torch tensor of shape (K, N)
+                        where K=3, N=seq_len.
+                        Each column i lists up to K neighbor indices for token i.
+                        Use -1 to indicate "no neighbor".
+        """
+        super().__init__()
+        assert embed_dim % num_heads == 0
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        if isinstance(neighbor_table, np.ndarray):
+            neighbor_table = torch.from_numpy(neighbor_table).long()
+        else:
+            neighbor_table = neighbor_table.long()
+
+        K, N = neighbor_table.shape
+        self.K = K
+        self.N = N
+
+        valid_mask = neighbor_table != -1  # (K, N), bool
+        neighbor_table = neighbor_table.clamp(min=0)
+
+        self.register_buffer("neighbor_indices", neighbor_table)
+        self.register_buffer("valid_mask", valid_mask.float())
+
+        self.q_proj = nn.Linear(embed_dim, embed_dim)
+        self.k_proj = nn.Linear(embed_dim, embed_dim)
+        self.v_proj = nn.Linear(embed_dim, embed_dim)
+        self.attn_drop = nn.Dropout(dropout)
+        self.proj = nn.Linear(embed_dim, embed_dim)
+        self.proj_drop = nn.Dropout(dropout)
+
+    def forward(self, x):
+        B, N, C = x.shape
+        assert N == self.N, f"Input sequence length {N} != expected {self.N}"
+
+        # Project Q, K, V
+        q = self.q_proj(x)  # (B, N, C)
+        k = self.k_proj(x)  # (B, N, C)
+        v = self.v_proj(x)  # (B, N, C)
+
+        # Reshape for multi-head: (B, N, H, D) -> (B, H, N, D)
+        q = q.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)  # (B, H, N, D)
+        k = k.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)  # (B, H, N, D)
+        v = v.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)  # (B, H, N, D)
+
+        # Gather neighbors for K and V: for each position i, get its K neighbors
+        # neighbor_indices: (K, N) -> expand to (B, H, K, N)
+        idx = self.neighbor_indices.unsqueeze(0).unsqueeze(0)  # (1, 1, K, N)
+        idx = idx.expand(B, self.num_heads, -1, -1)  # (B, H, K, N)
+
+        # k: (B, H, N, D) -> gather over N dimension using idx -> (B, H, K, N, D)
+        k_neighbors = torch.gather(k.unsqueeze(2).expand(-1, -1, self.K, -1, -1), 3, idx.unsqueeze(-1).expand(-1, -1, -1, -1, self.head_dim))
+        v_neighbors = torch.gather(v.unsqueeze(2).expand(-1, -1, self.K, -1, -1), 3, idx.unsqueeze(-1).expand(-1, -1, -1, -1, self.head_dim))
+
+        # q for each position: (B, H, N, D) -> unsqueeze to (B, H, 1, N, D)
+        q_exp = q.unsqueeze(2)  # (B, H, 1, N, D)
+
+        # Compute attention scores: (B, H, K, N)
+        attn_scores = (q_exp * k_neighbors).sum(dim=-1) * self.scale  # (B, H, K, N)
+
+        # Apply validity mask: invalid neighbors get -inf
+        valid_mask = self.valid_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, K, N)
+        attn_scores = attn_scores.masked_fill(valid_mask == 0, float('-inf'))
+
+        # Softmax over K dimension (only among valid neighbors)
+        attn_weights = attn_scores.softmax(dim=2)  # (B, H, K, N)
+        attn_weights = self.attn_drop(attn_weights)
+
+        # Weighted sum of V neighbors
+        out = (attn_weights.unsqueeze(-1) * v_neighbors).sum(dim=2)  # (B, H, N, D)
+
+        # Reshape back
+        out = out.transpose(1, 2).reshape(B, N, C)
+        out = self.proj(out)
+        out = self.proj_drop(out)
+        return out
+    
+class SparseTransformerBlock(nn.Module):
+    def __init__(self, embed_dim, num_heads, mlp_ratio, neighbor_table, dropout=0.1):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.attn = NeighborSparseAttention(embed_dim, num_heads, neighbor_table, dropout)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, int(embed_dim * mlp_ratio)),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(int(embed_dim * mlp_ratio), embed_dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x):
+        x = x + self.attn(self.norm1(x))
+        x = x + self.mlp(self.norm2(x))
+        return x
 
 class Encoder(nn.Module):
-    def __init__(self, node=60882, triangle=10, var_in=2, embed_dim=768, depth=12, t_in=6, num_heads=12, mlp_ratio=4., dropout=0.1):
+    def __init__(self, node=60882, triangle=10, var_in=2, embed_dim=768, depth=12, t_in=6, num_heads=12, mlp_ratio=4., neighbor_table=None, dropout=0.1, num_layers=2):
         super().__init__()
         self.var_in = var_in
         self.node = node
@@ -114,19 +216,29 @@ class Encoder(nn.Module):
         self.embed_dim = embed_dim
         self.embedding_layer = nn.Linear(var_in, embed_dim)
         self.spatial_pos_embed = nn.Parameter(torch.zeros(1, triangle, embed_dim))
-
+        assert neighbor_table.shape == (3, self.triangle), f"neighbor_table must be (3, {self.triangle})"
         self.pos_drop = nn.Dropout(p=dropout)
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embed_dim,
-            nhead=2,
-            dim_feedforward=int(embed_dim * mlp_ratio),
-            dropout=dropout,
-            activation='gelu',
-            batch_first=True
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
+        self.transformer_blocks = nn.ModuleList([
+            SparseTransformerBlock(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                mlp_ratio=mlp_ratio,
+                neighbor_table=neighbor_table,
+                dropout=dropout
+            ) for _ in range(num_layers)
+        ])
         self.norm = nn.LayerNorm(embed_dim)
+
+        # encoder_layer = nn.TransformerEncoderLayer(
+        #     d_model=embed_dim,
+        #     nhead=2,
+        #     dim_feedforward=int(embed_dim * mlp_ratio),
+        #     dropout=dropout,
+        #     activation='gelu',
+        #     batch_first=True
+        # )
+        # self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
 
         self._init_weights()
 
@@ -150,8 +262,11 @@ class Encoder(nn.Module):
         x = self.embedding_layer(x)
         x = x + self.spatial_pos_embed.unsqueeze(1)
         x = self.pos_drop(x)
+
         x = x.view(B, T * E, self.embed_dim)
-        x = self.transformer(x)
+
+        for blk in self.transformer_blocks:
+            x = blk(x)
         x = self.norm(x)
         return x
 
@@ -183,7 +298,7 @@ class Decoder(nn.Module):
 
 class ElementTransformerNet(nn.Module):
     def __init__(self, var_in=2, var_out=4, t_in=6, t_out=1, embed_dim=768, triangle=100,
-                 depth=12, num_heads=12, mlp_ratio=4., dropout=0.1):
+                 depth=12, num_heads=12, neighbor_table=None, mlp_ratio=4., dropout=0.1):
         super().__init__()
         self.t_in = t_in
         self.t_out = t_out
@@ -197,6 +312,7 @@ class ElementTransformerNet(nn.Module):
             t_in = t_in,
             num_heads=num_heads,
             mlp_ratio=mlp_ratio,
+            neighbor_table=neighbor_table,
             dropout=dropout
         )
         self.decoder = Decoder(
@@ -226,11 +342,11 @@ class ElementTransformerNet(nn.Module):
         return output
 
 def FVCOMModel(var_in=2, var_out=1, t_in=6, t_out=1, triangle=100, embed_dim=256,
-             depth=2,num_heads=2,mlp_ratio=4,dropout=0.1):
+             depth=2,num_heads=2,mlp_ratio=4,neighbor_table=None,dropout=0.1):
     
     model = ElementTransformerNet(var_in=var_in,var_out=var_out,t_in=t_in,triangle=triangle,
                                   t_out=t_out,embed_dim=embed_dim,depth=depth,
-                                  num_heads=num_heads)
+                                  num_heads=num_heads, neighbor_table=neighbor_table,)
     return model
 
 if __name__ == "__main__":
